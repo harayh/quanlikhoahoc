@@ -4,8 +4,9 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
+from django.utils import timezone
 import hmac, hashlib
-from courses.models import Category, Course, User, Role, UserCourse, Forum, Comment, Chapter, Lesson, CourseStatus
+from courses.models import Category, Course, User, Role, UserCourse, Forum, Comment, Chapter, Lesson, CourseStatus, LessonProgress
 from courses import serializers, paginators
 from .perms import IsAdmin, IsStudent, IsTeacher, IsTeacherOrAdmin
 from .services.momo import create_momo_payment, update_status_user_course
@@ -86,6 +87,18 @@ class ChapterViewSet(viewsets.ModelViewSet):
             return [IsTeacherOrAdmin()]
         return [permissions.IsAuthenticated()]
 
+    @action(methods=['get'], detail=True, url_path='lessons')
+    def get_chapter_with_lessons(self, request, pk=None):
+        """
+        Get detailed chapter information with all lessons and progress
+        """
+        chapter = self.get_object()
+        serializer = serializers.ChapterWithLessonsSerializer(
+            chapter, 
+            context={'request': request}
+        )
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 class LessonViewSet(viewsets.ModelViewSet):
     serializer_class = serializers.LessonSerializer
@@ -96,6 +109,166 @@ class LessonViewSet(viewsets.ModelViewSet):
         if self.request.method in ('POST', 'PUT', 'PATCH', 'DELETE'):
             return [IsTeacherOrAdmin()]
         return [permissions.IsAuthenticated()]
+
+
+class LessonProgressViewSet(viewsets.ModelViewSet):
+    serializer_class = serializers.LessonProgressSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        lesson_id = self.request.query_params.get('lesson')
+        
+        queryset = LessonProgress.objects.filter(user=user)
+        
+        if lesson_id:
+            queryset = queryset.filter(lesson_id=lesson_id)
+            
+        return queryset
+
+    def perform_create(self, serializer):
+        # Get or create lesson progress
+        lesson = serializer.validated_data['lesson']
+        user = self.request.user
+        
+        lesson_progress, created = LessonProgress.objects.get_or_create(
+            lesson=lesson,
+            user=user,
+            defaults=serializer.validated_data
+        )
+        
+        if not created:
+            # Update existing progress
+            for attr, value in serializer.validated_data.items():
+                setattr(lesson_progress, attr, value)
+            lesson_progress.save()
+        
+        return lesson_progress
+
+    @action(methods=['post'], detail=False, url_path='start-lesson')
+    def start_lesson(self, request):
+        """
+        Start learning a lesson - updates status to IN_PROGRESS and sets started_at
+        """
+        lesson_id = request.data.get('lesson')
+        if not lesson_id:
+            return Response(
+                {'error': 'lesson field is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            lesson = Lesson.objects.get(id=lesson_id)
+        except Lesson.DoesNotExist:
+            return Response(
+                {'error': 'Lesson not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        lesson_progress, created = LessonProgress.objects.get_or_create(
+            lesson=lesson,
+            user=request.user,
+            defaults={
+                'status': 'IN_PROGRESS',
+                'started_at': timezone.now()
+            }
+        )
+        
+        if not created and lesson_progress.status == 'NOT_STARTED':
+            lesson_progress.status = 'IN_PROGRESS'
+            lesson_progress.started_at = timezone.now()
+            lesson_progress.save()
+        
+        serializer = self.get_serializer(lesson_progress)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(methods=['post'], detail=False, url_path='complete-lesson')
+    def complete_lesson(self, request):
+        """
+        Complete a lesson - updates status to COMPLETED and sets completed_at
+        """
+        lesson_id = request.data.get('lesson')
+        if not lesson_id:
+            return Response(
+                {'error': 'lesson field is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            lesson = Lesson.objects.get(id=lesson_id)
+        except Lesson.DoesNotExist:
+            return Response(
+                {'error': 'Lesson not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        lesson_progress, created = LessonProgress.objects.get_or_create(
+            lesson=lesson,
+            user=request.user,
+            defaults={
+                'status': 'COMPLETED',
+                'started_at': timezone.now(),
+                'completed_at': timezone.now()
+            }
+        )
+        
+        if not created:
+            lesson_progress.status = 'COMPLETED'
+            lesson_progress.completed_at = timezone.now()
+            if not lesson_progress.started_at:
+                lesson_progress.started_at = timezone.now()
+            lesson_progress.save()
+        
+        serializer = self.get_serializer(lesson_progress)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(methods=['patch'], detail=False, url_path='update-watch-time')
+    def update_watch_time(self, request):
+        """
+        Update watch time for a lesson
+        """
+        lesson_id = request.data.get('lesson')
+        watch_time = request.data.get('watch_time')
+        
+        if not lesson_id:
+            return Response(
+                {'error': 'lesson field is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if watch_time is None:
+            return Response(
+                {'error': 'watch_time field is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            lesson = Lesson.objects.get(id=lesson_id)
+        except Lesson.DoesNotExist:
+            return Response(
+                {'error': 'Lesson not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        lesson_progress, created = LessonProgress.objects.get_or_create(
+            lesson=lesson,
+            user=request.user,
+            defaults={
+                'watch_time': watch_time,
+                'status': 'IN_PROGRESS',
+                'started_at': timezone.now()
+            }
+        )
+        
+        if not created:
+            lesson_progress.watch_time = watch_time
+            if lesson_progress.status == 'NOT_STARTED':
+                lesson_progress.status = 'IN_PROGRESS'
+                lesson_progress.started_at = timezone.now()
+            lesson_progress.save()
+        
+        serializer = self.get_serializer(lesson_progress)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class UserViewSet(viewsets.ViewSet, generics.CreateAPIView):

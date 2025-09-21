@@ -12,6 +12,12 @@ class CourseStatus(models.TextChoices):
     PAYMENT_FAILED = 'PAYMENT_FAILED', "Thanh toán thất bại"
 
 
+class LessonProgressStatus(models.TextChoices):
+    NOT_STARTED = 'NOT_STARTED', 'Chưa bắt đầu'
+    IN_PROGRESS = 'IN_PROGRESS', 'Đang học'
+    COMPLETED = 'COMPLETED', 'Hoàn thành'
+
+
 class BaseModel(models.Model):
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
@@ -125,10 +131,13 @@ class Payment(BaseModel):
 class LessonProgress(BaseModel):
     lesson = models.ForeignKey(Lesson, on_delete=models.CASCADE)
     user = models.ForeignKey(User, on_delete=models.CASCADE)
-    status = models.CharField(max_length=50)
+    status = models.CharField(max_length=50, default=LessonProgressStatus.NOT_STARTED, choices=LessonProgressStatus.choices)
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     watch_time = models.IntegerField(default=0)
+
+    class Meta:
+        unique_together = ('lesson', 'user')
 
 
 class Forum(BaseModel):

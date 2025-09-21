@@ -1,4 +1,4 @@
-from courses.models import Category, Course, User, UserCourse, Forum, Comment, Chapter, Lesson
+from courses.models import Category, Course, User, UserCourse, Forum, Comment, Chapter, Lesson, LessonProgress
 from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
 import cloudinary
@@ -91,6 +91,63 @@ class LessonSerializer(BaseSerializer):
         model = Lesson
         fields = ['id', 'chapter', 'name', 'description', 'type', 'video_url', 'duration', 'is_published', 'active',
                   'created_at']
+
+
+class LessonWithProgressSerializer(BaseSerializer):
+    progress = serializers.SerializerMethodField(read_only=True)
+    
+    class Meta:
+        model = Lesson
+        fields = ['id', 'chapter', 'name', 'description', 'type', 'video_url', 'duration', 'is_published', 'active',
+                  'created_at', 'progress']
+    
+    def get_progress(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            try:
+                progress = LessonProgress.objects.get(lesson=obj, user=request.user)
+                return LessonProgressSerializer(progress).data
+            except LessonProgress.DoesNotExist:
+                return None
+        return None
+
+
+class LessonProgressSerializer(BaseSerializer):
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    
+    class Meta:
+        model = LessonProgress
+        fields = ['id', 'lesson', 'user', 'status', 'status_display', 'started_at', 'completed_at', 'watch_time', 'created_at', 'updated_at']
+        read_only_fields = ['user', 'created_at', 'updated_at']
+    
+    def create(self, validated_data):
+        validated_data['user'] = self.context['request'].user
+        return super().create(validated_data)
+
+
+class ChapterWithLessonsSerializer(BaseSerializer):
+    lessons = LessonWithProgressSerializer(many=True, read_only=True)
+    total_lessons = serializers.SerializerMethodField(read_only=True)
+    completed_lessons = serializers.SerializerMethodField(read_only=True)
+    
+    class Meta:
+        model = Chapter
+        fields = ['id', 'course', 'name', 'description', 'is_published', 'active', 'created_at', 
+                  'lessons', 'total_lessons', 'completed_lessons']
+    
+    def get_total_lessons(self, obj):
+        return obj.lessons.filter(is_published=True).count()
+    
+    def get_completed_lessons(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return LessonProgress.objects.filter(
+                lesson__chapter=obj,
+                lesson__is_published=True,
+                user=request.user,
+                status='COMPLETED'
+            ).count()
+        return 0
 
 
 class UserRegistrationSerializer(BaseSerializer):
